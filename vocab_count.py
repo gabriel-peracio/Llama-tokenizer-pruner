@@ -2,6 +2,8 @@ import os
 from tqdm import tqdm
 import json
 import torch
+from multiprocessing import Pool, cpu_count
+import numpy as np  # For efficient array operations
 
 BATCH_SIZE = os.cpu_count() - 1
 
@@ -53,18 +55,60 @@ def count_freq(data_path, vocab_size, tokenizer, inherit_vocab_count):
     return vocab_counts
 
 
-def count_recursive(vocab_size, vocab_counts, old_bytes_list):
-    recursive_counts = [0 for _ in range(vocab_size)]
+# def count_recursive(vocab_size, vocab_counts, old_bytes_list):
+#     recursive_counts = [0 for _ in range(vocab_size)]
 
-    for i in tqdm(range(len(old_bytes_list))):
-        token_bytes = old_bytes_list[i]
+#     for i in tqdm(range(len(old_bytes_list))):
+#         token_bytes = old_bytes_list[i]
+#         t_count = vocab_counts[i]
+#         b_len = len(token_bytes)
+#         if t_count > 0 and b_len > 1:
+#             for j in range(1, b_len):
+#                 for k in range(b_len + 1 - j):
+#                     sub_token = token_bytes[k : j + k]
+#                     if sub_token in old_bytes_list:
+#                         recursive_counts[old_bytes_list.index(sub_token)] += t_count
+
+#     return recursive_counts
+
+
+def count_recursive_worker(args):
+    chunk_indices, vocab_counts, old_bytes_list, bytes_to_idx = args
+    chunk_counts = [0] * len(old_bytes_list)
+
+    for i in chunk_indices:
         t_count = vocab_counts[i]
+        token_bytes = old_bytes_list[i]
         b_len = len(token_bytes)
         if t_count > 0 and b_len > 1:
             for j in range(1, b_len):
                 for k in range(b_len + 1 - j):
-                    sub_token = token_bytes[k : j + k]
-                    if sub_token in old_bytes_list:
-                        recursive_counts[old_bytes_list.index(sub_token)] += t_count
+                    sub_token = token_bytes[k:j + k]
+                    if sub_token in bytes_to_idx:
+                        chunk_counts[bytes_to_idx[sub_token]] += t_count
 
+    return chunk_counts
+
+def count_recursive(vocab_size, vocab_counts, old_bytes_list):
+    # Ensure consistency
+    if len(vocab_counts) != vocab_size:
+        raise ValueError(f"vocab_counts length ({len(vocab_counts)}) must match vocab_size ({vocab_size})")
+    if len(old_bytes_list) != vocab_size:
+        raise ValueError(f"old_bytes_list length ({len(old_bytes_list)}) must match vocab_size ({vocab_size})")
+
+    bytes_to_idx = {token: i for i, token in enumerate(old_bytes_list)}
+    num_processes = max(1, cpu_count() - 1)
+    indices = list(range(vocab_size))  # Use vocab_size directly
+    chunk_size = max(1, len(indices) // num_processes)
+    chunks = [indices[i:i + chunk_size] for i in range(0, len(indices), chunk_size)]
+    worker_args = [(chunk, vocab_counts, old_bytes_list, bytes_to_idx) for chunk in chunks]
+
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
+    with Pool(processes=num_processes) as pool:
+        results = list(tqdm(pool.imap(count_recursive_worker, worker_args),
+                           total=len(chunks),
+                           desc="Processing chunks"))
+
+    recursive_counts = np.sum(results, axis=0).tolist()
     return recursive_counts
