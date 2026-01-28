@@ -1,0 +1,32 @@
+[project]
+name = "tokenizer-pruner"
+version = "0.1.0"
+description = "A modular, config-driven package for pruning LLM tokenizers"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.40",
+    "tqdm",
+    "termcolor",
+    "sentencepiece",
+    "numpy",
+    "accelerate",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "bitsandbytes", # for quantized models
+]
+
+[project.scripts]
+tokenizer-pruner = "tokenizer_pruner.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["tokenizer_pruner*"]

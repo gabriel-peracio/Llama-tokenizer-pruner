@@ -1,7 +1,13 @@
 venv
+.venv
 __pycache__
+*.egg-info
 
-*.json
+# Data files (but not config files)
 *.jsonl
+tokenizer.json
+tokenizer_config.json
 
+# Cache and output files
 unsloth_compiled_cache/
+*.torch
