@@ -10,11 +10,19 @@ output_path="/mnt/nvme/share/Models/LLM/Qwen/Qwen3-0.6B-Base-pruned-vocab-alt-to
 dataset="/mnt/nvme/share/Datasets/filler-alttokenizer-32k-0.jsonl"
 inherit_vocab_count="" # optional
 
-cmd="tokenizer-pruner --config $config --model_path $model_path --output_path $output_path --dataset $dataset"
+set -x
 
 if [ -n "$inherit_vocab_count" ]; then
-    cmd="$cmd --inherit_vocab_count $inherit_vocab_count"
+    tokenizer-pruner \
+        --config "$config" \
+        --model_path "$model_path" \
+        --output_path "$output_path" \
+        --dataset "$dataset" \
+        --inherit_vocab_count "$inherit_vocab_count"
+else
+    tokenizer-pruner \
+        --config "$config" \
+        --model_path "$model_path" \
+        --output_path "$output_path" \
+        --dataset "$dataset"
 fi
-
-echo "$cmd"
-$cmd

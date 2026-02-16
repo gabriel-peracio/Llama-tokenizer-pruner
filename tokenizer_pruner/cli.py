@@ -62,8 +62,9 @@ def main():
     parser.add_argument(
         "--dataset",
         type=str,
+        nargs="+",
         required=True,
-        help="Path to a JSONL/JSONL.zst file, or a glob pattern (e.g. '/data/*.jsonl.zst')",
+        help="Path(s) to JSONL/JSONL.zst files, or a glob pattern (e.g. '/data/*.jsonl.zst')",
     )
     parser.add_argument(
         "--target_vocab_size",
@@ -128,12 +129,11 @@ def main():
     else:
         old_vocab_size = tokenizer_vocab_size
 
-    # Count token frequencies
-    dataset_files = resolve_dataset_paths(args.dataset)
-    log(
-        f"Loading dataset: {len(dataset_files)} file(s) matching {args.dataset}",
-        args.dataset,
-    )
+    # Count token frequencies -- resolve each argument (may be a glob or a file)
+    dataset_files = []
+    for pattern in args.dataset:
+        dataset_files.extend(resolve_dataset_paths(pattern))
+    log(f"Loading dataset: {len(dataset_files)} file(s)")
     for f in dataset_files:
         log(f"  - {f}")
 

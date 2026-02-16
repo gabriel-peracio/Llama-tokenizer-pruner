@@ -42,25 +42,25 @@ def get_text_list(file_path: str) -> list[str]:
     """
     prompt_list = []
 
+    def _parse_lines(lines, filename):
+        for line in tqdm(lines, desc=f"Reading {filename}", mininterval=1.0):
+            line = line.strip()
+            if not line:
+                continue
+            data = json.loads(line)
+            if "input" in data and "output" in data:
+                prompt_list.append(data["input"])
+            elif "text" in data:
+                prompt_list.append(data["text"])
+
     if file_path.endswith(".zst"):
         dctx = zstd.ZstdDecompressor()
         with open(file_path, "rb") as fh:
             with dctx.stream_reader(fh) as reader:
-                text_stream = io.TextIOWrapper(reader, encoding="utf-8")
-                for line in tqdm(text_stream, desc=f"Reading {os.path.basename(file_path)}", mininterval=1.0):
-                    data = json.loads(line)
-                    if "input" in data and "output" in data:
-                        prompt_list.append(data["input"])
-                    elif "text" in data:
-                        prompt_list.append(data["text"])
+                _parse_lines(io.TextIOWrapper(reader, encoding="utf-8"), os.path.basename(file_path))
     else:
         with open(file_path, "r") as f:
-            for line in tqdm(f, desc=f"Reading {os.path.basename(file_path)}", mininterval=1.0):
-                data = json.loads(line)
-                if "input" in data and "output" in data:
-                    prompt_list.append(data["input"])
-                elif "text" in data:
-                    prompt_list.append(data["text"])
+            _parse_lines(f, os.path.basename(file_path))
 
     return prompt_list
 

@@ -9,11 +9,21 @@ dataset="./data.jsonl"
 inherit_vocab_count="" # optional
 target_vocab_size=32768
 
-cmd="tokenizer-pruner --config $config --model_path $model_path --output_path $output_path --dataset $dataset --target_vocab_size $target_vocab_size"
+set -x
 
 if [ -n "$inherit_vocab_count" ]; then
-    cmd="$cmd --inherit_vocab_count $inherit_vocab_count"
+    tokenizer-pruner \
+        --config "$config" \
+        --model_path "$model_path" \
+        --output_path "$output_path" \
+        --dataset "$dataset" \
+        --target_vocab_size "$target_vocab_size" \
+        --inherit_vocab_count "$inherit_vocab_count"
+else
+    tokenizer-pruner \
+        --config "$config" \
+        --model_path "$model_path" \
+        --output_path "$output_path" \
+        --dataset "$dataset" \
+        --target_vocab_size "$target_vocab_size"
 fi
-
-echo "$cmd"
-$cmd
