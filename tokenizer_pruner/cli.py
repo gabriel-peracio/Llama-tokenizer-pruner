@@ -16,7 +16,7 @@ if not hasattr(tokenization_gpt2, "bytes_to_unicode"):
     tokenization_gpt2.bytes_to_unicode = lambda: GPT2_BYTE_TO_CHAR
 
 from .config import load_config
-from .counting import count_freq, count_recursive
+from .counting import count_freq, count_recursive, resolve_dataset_paths
 from .model_ops import save_model
 from .vocab_ops import (
     get_new_vocab_and_map,
@@ -63,7 +63,7 @@ def main():
         "--dataset",
         type=str,
         required=True,
-        help="Path to JSONL dataset for vocabulary analysis",
+        help="Path to a JSONL/JSONL.zst file, or a glob pattern (e.g. '/data/*.jsonl.zst')",
     )
     parser.add_argument(
         "--target_vocab_size",
@@ -129,13 +129,20 @@ def main():
         old_vocab_size = tokenizer_vocab_size
 
     # Count token frequencies
-    log(f"Loading dataset {args.dataset}", args.dataset)
+    dataset_files = resolve_dataset_paths(args.dataset)
+    log(
+        f"Loading dataset: {len(dataset_files)} file(s) matching {args.dataset}",
+        args.dataset,
+    )
+    for f in dataset_files:
+        log(f"  - {f}")
+
     vocab_counts_path = os.path.join(args.output_path, "vocab_counts.torch")
     if os.path.exists(vocab_counts_path):
         vocab_counts = torch.load(vocab_counts_path, weights_only=False)
     else:
         vocab_counts = count_freq(
-            data_path=args.dataset,
+            data_path=dataset_files,
             vocab_size=old_vocab_size,
             tokenizer=old_tokenizer,
             inherit_vocab_count=args.inherit_vocab_count,

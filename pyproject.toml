@@ -12,7 +12,8 @@ dependencies = [
     "sentencepiece",
     "numpy",
     "accelerate",
-    "tiktoken"
+    "tiktoken",
+    "zstandard"
 ]
 
 [project.optional-dependencies]

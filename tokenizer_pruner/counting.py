@@ -1,61 +1,86 @@
 """Token frequency counting with multiprocessing support."""
 
+import glob
+import io
 import os
 import json
 from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import torch
+import zstandard as zstd
 from tqdm import tqdm
 
 BATCH_SIZE = max(1, os.cpu_count() - 1)
 
 
-def get_text_list(folder_path: str) -> list[str]:
-    """Load text data from a JSONL file.
+def resolve_dataset_paths(pattern: str) -> list[str]:
+    """Resolve a dataset argument into a sorted list of file paths.
 
-    Supports two formats:
+    Accepts either a single file path or a glob pattern.
+    Raises FileNotFoundError if no files match.
+    """
+    if os.path.isfile(pattern):
+        return [pattern]
+
+    paths = sorted(glob.glob(pattern))
+    if not paths:
+        raise FileNotFoundError(
+            f"No files matched the dataset pattern: {pattern}"
+        )
+    return paths
+
+
+def get_text_list(file_path: str) -> list[str]:
+    """Load text data from a JSONL or JSONL.zst file.
+
+    Supports two JSONL row formats:
     - {"input": ..., "output": ...} - uses "input" field
     - {"text": ...} - uses "text" field
+
+    The file may be plain text (.jsonl) or zstandard-compressed (.jsonl.zst).
     """
     prompt_list = []
 
-    with open(folder_path, "r") as f:
-        for line in tqdm(f, desc="Reading JSONL", mininterval=1.0):
-            data = json.loads(line)
-            if "input" in data and "output" in data:
-                prompt_list.append(data["input"])
-            elif "text" in data:
-                prompt_list.append(data["text"])
+    if file_path.endswith(".zst"):
+        dctx = zstd.ZstdDecompressor()
+        with open(file_path, "rb") as fh:
+            with dctx.stream_reader(fh) as reader:
+                text_stream = io.TextIOWrapper(reader, encoding="utf-8")
+                for line in tqdm(text_stream, desc=f"Reading {os.path.basename(file_path)}", mininterval=1.0):
+                    data = json.loads(line)
+                    if "input" in data and "output" in data:
+                        prompt_list.append(data["input"])
+                    elif "text" in data:
+                        prompt_list.append(data["text"])
+    else:
+        with open(file_path, "r") as f:
+            for line in tqdm(f, desc=f"Reading {os.path.basename(file_path)}", mininterval=1.0):
+                data = json.loads(line)
+                if "input" in data and "output" in data:
+                    prompt_list.append(data["input"])
+                elif "text" in data:
+                    prompt_list.append(data["text"])
 
     return prompt_list
 
 
-def count_freq(
-    data_path: str,
+def _count_file(
+    file_path: str,
     vocab_size: int,
     tokenizer,
-    inherit_vocab_count: str | None = None,
-) -> list[int]:
-    """Count token frequencies in a dataset.
+    vocab_counts: list[int],
+) -> int:
+    """Count token frequencies from a single file, accumulating into vocab_counts.
 
-    Args:
-        data_path: Path to JSONL file with text data
-        vocab_size: Size of the vocabulary
-        tokenizer: HuggingFace tokenizer
-        inherit_vocab_count: Optional path to previous vocab counts to merge
-
-    Returns:
-        List of token counts indexed by token ID
+    Returns the number of out-of-range token occurrences encountered.
     """
-    vocab_counts = [0 for _ in range(vocab_size)]
-    prompt_list = get_text_list(data_path)
+    prompt_list = get_text_list(file_path)
 
     out_of_range_count = 0
-    for i in tqdm(range(0, len(prompt_list), BATCH_SIZE), desc="Batch encoding"):
+    for i in tqdm(range(0, len(prompt_list), BATCH_SIZE), desc=f"Encoding {os.path.basename(file_path)}"):
         batch_prompts = prompt_list[i : i + BATCH_SIZE]
 
-        # Try batch encoding first, fall back to individual encoding for custom tokenizers
         try:
             result = tokenizer(batch_prompts)
             if result is not None and "input_ids" in result:
@@ -63,7 +88,6 @@ def count_freq(
             else:
                 raise ValueError("Batch encoding returned invalid result")
         except (ValueError, TypeError, AttributeError):
-            # Fall back to individual encoding
             tokens_batch = [tokenizer.encode(text) for text in batch_prompts]
 
         for tokens in tokens_batch:
@@ -72,6 +96,39 @@ def count_freq(
                     vocab_counts[token] += 1
                 else:
                     out_of_range_count += 1
+
+    return out_of_range_count
+
+
+def count_freq(
+    data_path: str | list[str],
+    vocab_size: int,
+    tokenizer,
+    inherit_vocab_count: str | None = None,
+) -> list[int]:
+    """Count token frequencies in a dataset.
+
+    Args:
+        data_path: A single file path, a glob pattern, or an already-resolved
+                   list of file paths.  Files are processed one at a time so
+                   that multi-file globs do not exhaust memory.
+        vocab_size: Size of the vocabulary
+        tokenizer: HuggingFace tokenizer
+        inherit_vocab_count: Optional path to previous vocab counts to merge
+
+    Returns:
+        List of token counts indexed by token ID
+    """
+    if isinstance(data_path, str):
+        file_paths = resolve_dataset_paths(data_path)
+    else:
+        file_paths = data_path
+
+    vocab_counts = [0 for _ in range(vocab_size)]
+
+    out_of_range_count = 0
+    for file_path in tqdm(file_paths, desc="Dataset files", disable=len(file_paths) == 1):
+        out_of_range_count += _count_file(file_path, vocab_size, tokenizer, vocab_counts)
 
     if out_of_range_count > 0:
         print(
