@@ -4,10 +4,9 @@
     "lm_head_path": "lm_head"
   },
   "tokenizer": {
-    "type": "bpe_json",
-    "byte_fallback_pattern": "<0x[0-9A-Fa-f]{2}>"
+    "type": "tiktoken"
   },
   "preserve_tokens": {
-    "patterns": ["<.*>"]
+    "patterns": ["\\[.*\\]", "<\\|.*\\|>", "<.*>"]
   }
 }

@@ -6,7 +6,14 @@ import os
 
 import torch
 from termcolor import colored
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers.models.gpt2 import tokenization_gpt2
+
+from .vocab_ops import GPT2_BYTE_TO_CHAR
+
+# Monkey-patch for models that expect bytes_to_unicode (removed in newer transformers)
+if not hasattr(tokenization_gpt2, "bytes_to_unicode"):
+    tokenization_gpt2.bytes_to_unicode = lambda: GPT2_BYTE_TO_CHAR
 
 from .config import load_config
 from .counting import count_freq, count_recursive
@@ -14,8 +21,10 @@ from .model_ops import save_model
 from .vocab_ops import (
     get_new_vocab_and_map,
     get_special_token_ids,
+    load_tiktoken_vocab,
     reduce_to_target_size,
     save_vocab,
+    save_vocab_tiktoken,
 )
 from .verification import smoke_test
 
@@ -77,28 +86,26 @@ def main():
 
     # Load config
     config = load_config(args.config)
-    log(f"Begin Pruning Vocabulary for: {colored(config.model_family, 'blue')}")
 
     # Create output directory
     if not os.path.exists(args.output_path):
         os.makedirs(args.output_path)
         log(f"Creating output folder: {args.output_path}", args.output_path)
 
-    # Load model and tokenizer
-    log(f"Loading model and tokenizer from: {args.model_path}", args.model_path)
-    old_model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
-        trust_remote_code=True,
-        device_map="cpu",
-    )
+    # Load config and tokenizer (NOT the full model yet - that's 100GB+ for large models)
+    log(f"Loading config and tokenizer from: {args.model_path}", args.model_path)
+    model_config = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
     old_tokenizer = AutoTokenizer.from_pretrained(
         args.model_path,
         trust_remote_code=True,
     )
 
+    model_type = getattr(model_config, "model_type", "unknown")
+    log(f"Pruning vocabulary for: {colored(model_type, 'blue')}")
+
     # Get vocabulary sizes
     tokenizer_vocab_size = len(old_tokenizer.get_vocab())
-    config_vocab_size = old_model.config.vocab_size
+    config_vocab_size = model_config.vocab_size
 
     # Handle vocab size mismatch
     if tokenizer_vocab_size > config_vocab_size:
@@ -136,11 +143,17 @@ def main():
         torch.save(vocab_counts, vocab_counts_path)
 
     # Get byte representations (limited to old_vocab_size)
-    vocabulary = old_tokenizer.get_vocab()
-    vocab_items = sorted(vocabulary.items(), key=lambda x: x[1])
-    # Only include tokens within the valid vocab range
-    vocab_items = [(token, idx) for token, idx in vocab_items if idx < old_vocab_size]
-    old_bytes_list = [token.encode("utf-8") for token, _ in vocab_items]
+    if config.tokenizer.type == "tiktoken":
+        # For tiktoken, read raw bytes directly from the .model file
+        old_bytes_list = load_tiktoken_vocab(args.model_path, max_token_id=old_vocab_size)
+        log(f"Loaded {len(old_bytes_list)} tokens from tiktoken.model")
+    else:
+        # For BPE JSON, get vocab from tokenizer
+        vocabulary = old_tokenizer.get_vocab()
+        vocab_items = sorted(vocabulary.items(), key=lambda x: x[1])
+        # Only include tokens within the valid vocab range
+        vocab_items = [(token, idx) for token, idx in vocab_items if idx < old_vocab_size]
+        old_bytes_list = [token.encode("utf-8") for token, _ in vocab_items]
 
     # Count recursive sub-token usage
     log("Calculating subword counts")
@@ -185,7 +198,22 @@ def main():
         special_token_ids=special_token_ids,
     )
     new_vocab_size = len(mapping_new2old)
-    save_vocab(new_bytes_list, mapping_new2old, args.output_path, args.model_path)
+
+    # Dispatch to correct save function based on tokenizer type
+    if config.tokenizer.type == "tiktoken":
+        save_vocab_tiktoken(
+            new_bytes_list, mapping_new2old, args.output_path, args.model_path
+        )
+    else:
+        save_vocab(new_bytes_list, mapping_new2old, args.output_path, args.model_path)
+
+    # NOW load the model weights (only when we actually need them)
+    log(f"Loading model weights from: {args.model_path}", args.model_path)
+    old_model = AutoModelForCausalLM.from_pretrained(
+        args.model_path,
+        trust_remote_code=True,
+        device_map="cpu",
+    )
 
     # Update and save model
     log("Updating checkpoint files")

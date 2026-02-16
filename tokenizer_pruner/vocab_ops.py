@@ -1,5 +1,7 @@
 """Vocabulary operations: special token detection, pruning, and saving."""
 
+import base64
+import glob as glob_module
 import json
 import os
 import re
@@ -83,8 +85,11 @@ def get_special_token_ids(
     Uses a multi-layer detection approach:
     1. added_tokens_decoder from tokenizer_config.json
     2. Special tokens from tokenizer object (all_special_ids)
-    3. added_tokens from tokenizer.json
-    4. Byte fallback tokens - both <0x00> style AND GPT-2 style encoding
+    3. added_tokens from tokenizer.json (if exists)
+    4. Byte fallback tokens:
+       - tiktoken: first 256 tokens (single bytes)
+       - <0x00> style (Qwen, etc.)
+       - GPT-2 style single-char encoding (Llama 3, GPT-2, etc.)
     5. Preserve patterns from config
 
     Args:
@@ -97,6 +102,7 @@ def get_special_token_ids(
         Set of token IDs to always preserve
     """
     special_ids = set()
+    is_tiktoken = config is not None and config.tokenizer.type == "tiktoken"
 
     # Method 1: added_tokens_decoder from tokenizer_config
     tokenizer_config_path = os.path.join(model_path, "tokenizer_config.json")
@@ -111,7 +117,7 @@ def get_special_token_ids(
     if hasattr(tokenizer, "all_special_ids"):
         special_ids.update(tokenizer.all_special_ids)
 
-    # Method 3: added_tokens from tokenizer.json
+    # Method 3: added_tokens from tokenizer.json (skip for tiktoken)
     tokenizer_json_path = os.path.join(model_path, "tokenizer.json")
     if os.path.exists(tokenizer_json_path):
         with open(tokenizer_json_path, "r") as f:
@@ -121,35 +127,53 @@ def get_special_token_ids(
                     special_ids.add(token["id"])
 
     # Method 4: Detect byte fallback tokens
-    vocab = tokenizer.get_vocab()
-    reverse_vocab = {v: k for k, v in vocab.items()}
-
-    # Get byte fallback pattern from config or use default
-    if config is not None:
-        byte_pattern = config.get_byte_fallback_pattern()
-    else:
-        byte_pattern = re.compile(r"<0x[0-9A-Fa-f]{2}>")
-
     byte_token_count = 0
     gpt2_byte_count = 0
+    tiktoken_byte_count = 0
 
-    # Check first 512 tokens for byte patterns
-    for i in range(min(512, len(vocab))):
-        token = reverse_vocab.get(i, "")
+    if is_tiktoken:
+        # For tiktoken, first 256 tokens are single bytes - always preserve them
+        tiktoken_path = os.path.join(model_path, "tiktoken.model")
+        if os.path.exists(tiktoken_path):
+            with open(tiktoken_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) == 2:
+                        token_b64, rank = parts
+                        rank = int(rank)
+                        token_bytes = base64.b64decode(token_b64)
+                        if len(token_bytes) == 1:
+                            special_ids.add(rank)
+                            tiktoken_byte_count += 1
+    else:
+        # For non-tiktoken: check for <0x..> or GPT-2 style
+        vocab = tokenizer.get_vocab()
+        reverse_vocab = {v: k for k, v in vocab.items()}
 
-        # Check for <0x..> style byte tokens (Qwen, etc.)
-        if byte_pattern.match(token):
-            special_ids.add(i)
-            byte_token_count += 1
-        # Check for GPT-2 style single-char byte tokens (Llama 3, GPT-2, etc.)
-        elif _is_gpt2_byte_token(token):
-            special_ids.add(i)
-            gpt2_byte_count += 1
+        # Get byte fallback pattern from config or use default
+        if config is not None:
+            byte_pattern = config.get_byte_fallback_pattern()
+        else:
+            byte_pattern = re.compile(r"<0x[0-9A-Fa-f]{2}>")
+
+        # Check first 512 tokens for byte patterns
+        for i in range(min(512, len(vocab))):
+            token = reverse_vocab.get(i, "")
+
+            # Check for <0x..> style byte tokens (Qwen, etc.)
+            if byte_pattern.match(token):
+                special_ids.add(i)
+                byte_token_count += 1
+            # Check for GPT-2 style single-char byte tokens (Llama 3, GPT-2, etc.)
+            elif _is_gpt2_byte_token(token):
+                special_ids.add(i)
+                gpt2_byte_count += 1
 
     # Method 5: Match preserve_tokens patterns from config
     if config is not None:
         preserve_patterns = config.get_preserve_patterns()
         if preserve_patterns:
+            vocab = tokenizer.get_vocab()
             pattern_match_count = 0
             for token, token_id in vocab.items():
                 for pattern in preserve_patterns:
@@ -171,6 +195,8 @@ def get_special_token_ids(
         special_ids = {tid for tid in special_ids if tid < max_token_id}
 
     print(f"Found {len(special_ids)} special/added tokens to preserve")
+    if tiktoken_byte_count > 0:
+        print(f"  - {tiktoken_byte_count} byte fallback tokens (tiktoken)")
     if byte_token_count > 0:
         print(f"  - {byte_token_count} byte fallback tokens (<0x..> style)")
     if gpt2_byte_count > 0:
@@ -471,3 +497,179 @@ def save_vocab(
     # 9. token_mapping.torch
     token_mapping_path = os.path.join(output_path, "token_mapping.torch")
     torch.save(torch.LongTensor(token_mapping), token_mapping_path)
+
+
+def save_vocab_tiktoken(
+    bytes_list: list[bytes],
+    token_mapping: list[int],
+    output_path: str,
+    old_model_path: str,
+) -> None:
+    """Save pruned vocabulary for tiktoken-based tokenizers.
+
+    Args:
+        bytes_list: New vocabulary as byte representations
+        token_mapping: Mapping from new to old token indices
+        output_path: Output directory
+        old_model_path: Original model directory
+    """
+    old_to_new = {old: new for new, old in enumerate(token_mapping)}
+
+    # 1. Copy files that don't need modification
+    files_to_copy = [
+        "special_tokens_map.json",
+        "chat_template.jinja",
+        "README.md",
+    ]
+    for filename in files_to_copy:
+        src_path = os.path.join(old_model_path, filename)
+        if os.path.exists(src_path):
+            shutil.copy2(src_path, os.path.join(output_path, filename))
+            print(f"Copied {filename}")
+
+    # 2. Copy custom model code files (for trust_remote_code models)
+    code_patterns = ["*.py"]
+    for pattern in code_patterns:
+        for src_path in glob_module.glob(os.path.join(old_model_path, pattern)):
+            filename = os.path.basename(src_path)
+            shutil.copy2(src_path, os.path.join(output_path, filename))
+            print(f"Copied {filename}")
+
+    # 3. config.json
+    with open(os.path.join(old_model_path, "config.json"), "r") as f:
+        config = json.load(f)
+
+    config["vocab_size"] = len(token_mapping)
+
+    # Update token IDs
+    token_id_keys = ["bos_token_id", "eos_token_id", "pad_token_id"]
+    for key in token_id_keys:
+        if key in config and config[key] is not None and config[key] in old_to_new:
+            old_val = config[key]
+            config[key] = old_to_new[old_val]
+            print(f"Updated config.{key}: {old_val} -> {config[key]}")
+
+    with open(os.path.join(output_path, "config.json"), "w+") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+    # 4. generation_config.json
+    gen_config_path = os.path.join(old_model_path, "generation_config.json")
+    if os.path.exists(gen_config_path):
+        with open(gen_config_path, "r") as f:
+            gen_config = json.load(f)
+
+        for key in ["bos_token_id", "eos_token_id", "pad_token_id"]:
+            if key in gen_config and gen_config[key] is not None:
+                old_id = gen_config[key]
+                if isinstance(old_id, list):
+                    new_ids = [old_to_new[i] for i in old_id if i in old_to_new]
+                    if new_ids:
+                        gen_config[key] = new_ids
+                        print(f"Updated generation_config.{key}: {old_id} -> {new_ids}")
+                elif old_id in old_to_new:
+                    gen_config[key] = old_to_new[old_id]
+                    print(f"Updated generation_config.{key}: {old_id} -> {old_to_new[old_id]}")
+
+        with open(os.path.join(output_path, "generation_config.json"), "w+") as f:
+            json.dump(gen_config, f, indent=2, ensure_ascii=False)
+
+    # 5. tokenizer_config.json
+    with open(os.path.join(old_model_path, "tokenizer_config.json"), "r") as f:
+        tok_config = json.load(f)
+
+    new_decoder = {}
+    for old_id, token_info in tok_config["added_tokens_decoder"].items():
+        old_id = int(old_id)
+        if old_id in old_to_new:
+            new_decoder[str(old_to_new[old_id])] = token_info
+    tok_config["added_tokens_decoder"] = new_decoder
+
+    with open(os.path.join(output_path, "tokenizer_config.json"), "w+") as f:
+        json.dump(tok_config, f, indent=2, ensure_ascii=False)
+
+    # 6. tiktoken.model - rebuild with pruned vocabulary
+    tiktoken_path = os.path.join(old_model_path, "tiktoken.model")
+    if os.path.exists(tiktoken_path):
+        # Read original tiktoken.model
+        old_ranks = {}
+        with open(tiktoken_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) == 2:
+                    token_b64, rank = parts
+                    old_ranks[int(rank)] = token_b64
+
+        # Write pruned tiktoken.model with remapped ranks
+        new_lines = []
+        for new_rank, old_rank in enumerate(token_mapping):
+            if old_rank in old_ranks:
+                token_b64 = old_ranks[old_rank]
+                new_lines.append(f"{token_b64} {new_rank}")
+
+        with open(os.path.join(output_path, "tiktoken.model"), "w", encoding="utf-8") as f:
+            for line in new_lines:
+                f.write(line + "\n")
+
+        print(f"Saved tiktoken.model with {len(new_lines)} tokens")
+
+    # 7. token_mapping.torch
+    token_mapping_path = os.path.join(output_path, "token_mapping.torch")
+    torch.save(torch.LongTensor(token_mapping), token_mapping_path)
+
+
+def load_tiktoken_vocab(model_path: str, max_token_id: int | None = None) -> list[bytes]:
+    """Load vocabulary directly from tiktoken.model file as raw bytes.
+
+    This is needed because get_vocab() returns GPT-2 encoded strings,
+    but we need raw bytes for proper substring matching.
+
+    Args:
+        model_path: Path to model directory containing tiktoken.model
+        max_token_id: Maximum token ID to include (for vocab size limits)
+
+    Returns:
+        List of token bytes indexed by token ID
+    """
+    tiktoken_path = os.path.join(model_path, "tiktoken.model")
+    if not os.path.exists(tiktoken_path):
+        raise FileNotFoundError(f"tiktoken.model not found at {tiktoken_path}")
+
+    # Read tiktoken.model: each line is "base64_token rank"
+    ranks = {}
+    with open(tiktoken_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) == 2:
+                token_b64, rank = parts
+                rank = int(rank)
+                if max_token_id is None or rank < max_token_id:
+                    ranks[rank] = base64.b64decode(token_b64)
+
+    # Also read added tokens from tokenizer_config.json
+    tokenizer_config_path = os.path.join(model_path, "tokenizer_config.json")
+    if os.path.exists(tokenizer_config_path):
+        with open(tokenizer_config_path, "r") as f:
+            tok_config = json.load(f)
+            if "added_tokens_decoder" in tok_config:
+                for token_id, token_info in tok_config["added_tokens_decoder"].items():
+                    token_id = int(token_id)
+                    if max_token_id is None or token_id < max_token_id:
+                        # Store the token content as UTF-8 bytes
+                        ranks[token_id] = token_info["content"].encode("utf-8")
+
+    # Build list indexed by rank
+    if not ranks:
+        return []
+
+    max_rank = max(ranks.keys())
+    bytes_list = [b""] * (max_rank + 1)
+    for rank, token_bytes in ranks.items():
+        bytes_list[rank] = token_bytes
+
+    return bytes_list

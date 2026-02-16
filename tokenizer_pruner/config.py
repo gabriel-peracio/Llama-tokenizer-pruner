@@ -34,7 +34,6 @@ class PreserveTokensConfig:
 class ModelConfig:
     """Complete configuration for a model family."""
 
-    model_family: str
     architecture: ArchitectureConfig
     tokenizer: TokenizerConfig
     preserve_tokens: PreserveTokensConfig = field(
@@ -61,7 +60,7 @@ def load_config(config_path: str | Path) -> ModelConfig:
         data = json.load(f)
 
     # Validate required fields
-    required_fields = ["model_family", "architecture", "tokenizer"]
+    required_fields = ["architecture", "tokenizer"]
     for field_name in required_fields:
         if field_name not in data:
             raise ValueError(f"Config missing required field: {field_name}")
@@ -97,7 +96,6 @@ def load_config(config_path: str | Path) -> ModelConfig:
     )
 
     return ModelConfig(
-        model_family=data["model_family"],
         architecture=architecture,
         tokenizer=tokenizer,
         preserve_tokens=preserve_tokens,

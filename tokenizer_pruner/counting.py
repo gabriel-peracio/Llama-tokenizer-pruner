@@ -54,7 +54,17 @@ def count_freq(
     out_of_range_count = 0
     for i in tqdm(range(0, len(prompt_list), BATCH_SIZE), desc="Batch encoding"):
         batch_prompts = prompt_list[i : i + BATCH_SIZE]
-        tokens_batch = tokenizer(batch_prompts)["input_ids"]
+
+        # Try batch encoding first, fall back to individual encoding for custom tokenizers
+        try:
+            result = tokenizer(batch_prompts)
+            if result is not None and "input_ids" in result:
+                tokens_batch = result["input_ids"]
+            else:
+                raise ValueError("Batch encoding returned invalid result")
+        except (ValueError, TypeError, AttributeError):
+            # Fall back to individual encoding
+            tokens_batch = [tokenizer.encode(text) for text in batch_prompts]
 
         for tokens in tokens_batch:
             for token in tokens:

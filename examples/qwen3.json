@@ -1,5 +1,4 @@
 {
-  "model_family": "qwen3",
   "architecture": {
     "embedding_path": "model.embed_tokens",
     "lm_head_path": "lm_head"
