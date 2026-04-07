@@ -2,12 +2,10 @@
 
 set -e
 
-export CUDA_VISIBLE_DEVICES=1
-
-config="examples/qwen3.json"
-model_path="/mnt/nvme/share/Models/LLM/Qwen/Qwen3-0.6B-Base"
-output_path="/mnt/nvme/share/Models/LLM/Qwen/Qwen3-0.6B-Base-pruned-vocab-alt-tokenizer"
-dataset="/mnt/nvme/share/Datasets/filler-alttokenizer-32k-0.jsonl"
+config="examples/nemotron-nano.json"
+model_path="/root/models/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-Base-BF16"
+output_path="/root/models/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-Base-BF16-Pruned"
+dataset="/root/datasets/rawDataset*.jsonl.zst"
 inherit_vocab_count="" # optional
 
 set -x
@@ -26,3 +24,4 @@ else
         --output_path "$output_path" \
         --dataset "$dataset"
 fi
+

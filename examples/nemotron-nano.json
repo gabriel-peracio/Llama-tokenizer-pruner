@@ -1,0 +1,16 @@
+{
+  "architecture": {
+    "embedding_path": "backbone.embeddings",
+    "lm_head_path": "lm_head"
+  },
+  "tokenizer": {
+    "type": "bpe_json",
+    "byte_fallback_pattern": "<0x[0-9A-Fa-f]{2}>"
+  },
+  "preserve_tokens": {
+    "patterns": [
+      "<.*>",
+      "[.*]"
+    ]
+  }
+}

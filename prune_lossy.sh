@@ -2,12 +2,12 @@
 
 set -e
 
-config="examples/gemma3.json"
-model_path="/mnt/e/models/unsloth/gemma-3-27b-pt-unsloth-bnb-4bit"
-output_path="/mnt/e/models/unsloth/gemma-3-27b-pt-unsloth-bnb-4bit-pruned-vocab"
-dataset="./data.jsonl"
+config="examples/nemotron-nano.json"
+model_path="/root/models/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-Base-BF16"
+output_path="/root/models/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-Base-BF16-Pruned"
+dataset="/root/datasets/rawDataset*.jsonl.zst"
 inherit_vocab_count="" # optional
-target_vocab_size=32768
+target_vocab_size=62895
 
 set -x
 

@@ -37,6 +37,25 @@ def log(message: str, highlight: str | None = None) -> None:
     print(f"[{timestamp}]: {message}")
 
 
+def _get_config_vocab_size(model_config) -> int | None:
+    """Return vocab_size from the model config, searching sub-configs if needed.
+
+    Some composite/MoE models (e.g. Qwen3.5-MoE) don't expose vocab_size at the
+    top level; it lives on a nested config such as text_config or language_model_config.
+    """
+    if hasattr(model_config, "vocab_size"):
+        return model_config.vocab_size
+    # Walk every attribute that looks like a sub-config object
+    for attr_name in dir(model_config):
+        if attr_name.startswith("_"):
+            continue
+        if attr_name.endswith("_config") or attr_name in ("text_config", "language_model_config"):
+            sub = getattr(model_config, attr_name, None)
+            if sub is not None and hasattr(sub, "vocab_size"):
+                return sub.vocab_size
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Prune LLM tokenizer vocabulary based on dataset usage"
@@ -106,10 +125,12 @@ def main():
 
     # Get vocabulary sizes
     tokenizer_vocab_size = len(old_tokenizer.get_vocab())
-    config_vocab_size = model_config.vocab_size
+    config_vocab_size = _get_config_vocab_size(model_config)
 
     # Handle vocab size mismatch
-    if tokenizer_vocab_size > config_vocab_size:
+    if config_vocab_size is None:
+        old_vocab_size = tokenizer_vocab_size
+    elif tokenizer_vocab_size > config_vocab_size:
         print(
             colored(
                 f"Warning: Tokenizer has {tokenizer_vocab_size - config_vocab_size} more tokens "
@@ -220,6 +241,7 @@ def main():
         args.model_path,
         trust_remote_code=True,
         device_map="cpu",
+        dtype="auto",   # <-- honour native checkpoint dtypes
     )
 
     # Update and save model
